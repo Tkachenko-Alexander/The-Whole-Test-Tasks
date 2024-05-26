@@ -1,0 +1,47 @@
+Вывести самый прибыльный ТП с точки зрения суммарной АП за доп.услуги пофилиально.
+Результат: название филиала, название ТП(если несколько ТП занимают одно место - вывести через запятую), величина АП.
+
+with ap_tp as
+ (select fc.id_department, fs.id_tariff_plan, sum(fsc.n_cost_period) sum_per
+    from fw_contracts fc
+    join fw_services fs
+      on fs.id_contract_inst = fc.id_contract_inst
+     and fs.b_deleted = 0
+     and fs.dt_start <= current_timestamp
+     and fs.dt_stop > current_timestamp
+    join fw_service fse
+      on fse.id_service = fs.id_service
+     and fse.b_deleted = 0
+     and fse.b_add_service = 1
+    join fw_services_cost fsc
+      on fsc.id_service_inst = fs.id_service_inst
+     and fsc.dt_start <= current_timestamp
+     and fsc.dt_stop > current_timestamp
+   where fc.dt_start <= current_timestamp
+     and fc.dt_stop > current_timestamp
+   group by fc.id_department, fs.id_tariff_plan),
+ap_max_dep as
+ (select max(t.sum_per) as sum_per, t.id_department
+    from ap_tp t
+   group by t.id_department),
+tp_max as
+ (select m.id_department, a.id_tariff_plan, a.sum_per
+    from ap_tp a
+    left join ap_max_dep m
+      on m.id_department = a.id_department
+     and m.sum_per = a.sum_per)
+select d.v_name,
+       listagg(tp.v_name, ', ') within group(order by tp.v_name),
+       t.sum_per
+  from fw_departments d
+  left join tp_max t
+    on t.id_department = d.id_department
+  left join fw_tariff_plan tp
+    on tp.id_tariff_plan = t.id_tariff_plan
+   and tp.dt_start <= current_timestamp
+   and tp.dt_stop > current_timestamp
+   and tp.b_deleted = 0
+   and tp.b_active = 1
+ where d.b_deleted = 0
+ group by d.v_name, t.sum_per
+ order by 3 nulls last;

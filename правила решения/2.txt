@@ -1,0 +1,115 @@
+Создать отчет по платежам за текущий месяц этого года в разрезе департаментов
+Результат: наименование департамента, сумма платежей в этом департаменте за текущий месяц, 
+количество платежей в этом департаменте за текущий 
+месяц, количество контрактов в этом департаменте.
+
+select dep.v_name,
+       nvl(sum(te.f_sum), 0),
+       count(te.f_sum),
+       count(DISTINCT fc.id_contract_inst)
+  from fw_departments dep
+  left join fw_contracts fc
+    on fc.id_department = dep.id_department
+   and fc.v_status = 'A'
+   and fc.dt_stop > current_timestamp
+   and fc.dt_start <= current_timestamp
+  left join trans_external te
+    on te.id_contract = fc.id_contract_inst
+   and te.v_status = 'A'
+   and trunc(te.dt_event, 'mm') = trunc(current_timestamp, 'mm')
+ where dep.b_deleted = 0
+ group by dep.v_name;
+
+Найти контракты, на которые в 2017 году было совершено более 3 платежей
+Результат: номер лицевого счета, статус контракта, количество платежей на этом контракте за 2017 году
+
+select f.v_ext_ident, f.v_status, f.cnt
+  from (select count(1) as cnt, f.v_ext_ident, f.v_status
+          from fw_contracts f
+          join trans_external t
+            on t.id_contract = f.id_contract_inst
+           and t.v_status = 'A'
+           and trunc(t.dt_event, 'yyyy') =
+               to_date('2017-01-01', 'yyyy-mm-dd')
+         where f.dt_stop > current_timestamp
+           and f.dt_start <= current_timestamp
+         group by f.v_ext_ident, f.v_status) f
+    where f.cnt > 3;
+
+Задача 3
+Найти такие департаменты, к которым не привязано ни одного контракта
+Результат: наименование департаментов
+
+select d.v_name
+  from fw_departments d
+ where d.b_deleted = 0
+   and not exists (select 1    -- КОГДА СКОБКИ?
+          from fw_contracts f    -- JOIN???
+         where f.dt_start <= current_timestamp
+           and f.dt_stop > current_timestamp
+           and f.v_status = 'A'
+           and f.id_department = d.id_department);            
+ 
+Задача 4
+Вывести количество платежей на контрактах.
+Результат: количество платежей, дата последнего платежа, номер лицевого счета контракта, 
+имя пользователя, создавшего платеж
+
+select cnt_on_contr.coun_trans,
+       cnt_on_contr.max_date,
+       cnt_on_contr.v_ext_ident,
+       cu.v_username
+  from (select fc.id_contract_inst,
+               fc.v_ext_ident,
+               count(te.id_trans) as coun_trans,
+               max(te.dt_event) as max_date
+          from fw_contracts fc
+          left join trans_external te
+            on te.id_contract = fc.id_contract_inst
+           and te.v_status = 'A'
+         where fc.v_status = 'A'
+           and fc.dt_stop > current_timestamp
+           and fc.dt_start <= current_timestamp
+         group by fc.v_ext_ident, fc.id_contract_inst) cnt_on_contr
+  left join trans_external te1
+    on te1.id_contract = cnt_on_contr.id_contract_inst
+   and te1.dt_event = cnt_on_contr.max_date
+   and te1.v_status = 'A'
+  left join ci_users cu
+    on cu.id_user = te1.id_manager
+   and cu.v_status = 'A';
+
+Задача 5
+Найти те контракты, у которых менялась валюта, например, была указана валюта рубль, 
+потом появилась новая запись с валютой уже доллар
+Результат: код контракта, лицевой счет, статус, наименование валюты Данные вывести на текущий день
+
+select c.ID_CONTRACT_INST, c.V_EXT_IDENT, c.V_STATUS, cur.V_NAME
+  from fw_contracts c
+  join FW_CURRENCY cur
+    on cur.id_currency = c.ID_CURRENCY
+   and cur.b_deleted = 0
+ where c.dt_start <= current_timestamp
+   and c.dt_stop > current_timestamp
+   and exists
+ (select 1
+          from fw_contracts fc
+         where fc.id_contract_inst = c.id_contract_inst
+           and fc.id_currency != c.id_currency);
+
+Задача 6
+Вывести отчет по сумме активных платежей на контракте за каждый год.
+Результат: Сумма платежей на контракте, идентификатор контракта, наименование департамента, дата начала года
+
+select sum(t.f_sum), fc.v_ext_ident, trunc(t.dt_event, 'yyyy'), d.v_name
+  from fw_contracts fc
+  join trans_external t
+    on t.id_contract = fc.id_contract_inst
+   and t.v_status = 'A'
+  join FW_DEPARTMENTS d
+    on d.id_department = fc.id_department
+   and d.b_deleted = 0
+ where fc.dt_start <= current_timestamp
+   and fc.dt_stop > current_timestamp
+   and fc.v_status = 'A'
+ group by trunc(t.dt_event, 'yyyy'), fc.v_ext_ident, d.v_name;

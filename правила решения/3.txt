@@ -1,0 +1,171 @@
+Задача 1
+Выведите все департаменты, у которых количество контрактов больше, чем у департамента АЛМАТЫ.
+ Используйте запрос к fw_contracts и fw_departments лишь единожды.
+Формат вывода: департамент, количество контрактов.
+
+with con_cnt as
+ (select d.v_name, count(1) cnt
+    from fw_departments d
+    join fw_contracts c
+      on c.id_department = d.id_department
+     and c.dt_start <= current_timestamp
+     and c.dt_stop > current_timestamp
+   where d.b_deleted = 0
+   group by d.v_name)
+select c.cnt, c.v_name
+  from con_cnt c
+  join con_cnt ast
+    on ast.v_name = 'АЛМАТЫ'
+   and ast.cnt < c.cnt;
+
+Задача 2
+Требуется почистить таблицу департаментов от неиспользуемых. Для этого нужно подготовить запрос.
+Выведите департаменты, у которых отсутствуют платежи, а также департаменты, на которых отсутствуют контракты. 
+Отсортируйте по имени департамента. 
+Формат вывода: Наименование, причина удаления. Если подходят обе причины - перечислить через запятую.
+
+select dat.v_name,
+       listagg(dat.reason, ', ') within group(order by dat.reason)
+  from (select d.v_name,
+               'Отсутствие контрактов' as reason
+          from fw_departments d
+         where d.b_deleted = 0
+           and not exists
+         (select 1
+                  from fw_contracts c
+                 where c.id_department = d.id_department
+                   and c.dt_stop > current_timestamp
+                   and c.dt_start <= current_timestamp)
+        union all
+        select d.v_name, 'Отсутствие платежей'
+          from fw_departments d
+         where d.b_deleted = 0
+           and not exists (select 1
+                  from trans_external e
+                  join fw_contracts c
+                    on c.id_contract_inst = e.id_contract
+                   and c.id_department = d.id_department
+                   and c.dt_stop > current_timestamp
+                   and c.dt_start <= current_timestamp
+                 where e.v_status = 'A')) dat
+ group by dat.v_name
+ order by dat.v_name;
+
+Задача 3
+Выведите суммарные платежи всей структуры департаментов ГУП РК \"Крымтелеком\" 
+(сам департамент, дочерние, дочерние дочерних и т.д.).
+Формат вывода: число, равное сумме.
+
+with payments as
+ (select c.id_department, sum(e.f_sum) as payment_sum
+    from trans_external e
+    join fw_contracts c
+      on c.id_contract_inst = e.id_contract
+     and c.dt_start <= current_timestamp
+     and c.dt_stop > current_timestamp
+   where e.v_status = 'A'
+   group by c.id_department)
+select nvl(sum(p.payment_sum), 0) as sum_res
+  from fw_departments d
+  left join payments p
+  on p.id_department = d.id_department
+ where d.b_deleted = 0
+ start with d.v_name = 'ГУП РК "Крымтелеком"'
+connect by d.id_parent = prior d.id_department;
+
+Задача 4
+Заказчик просит вывести в график сумму с нарастающим итогом платежей за год. В рамках этого, требуется решить задачу:
+Вывести сумму с накоплением платежей по месяцам в 2016 году в формате: сумма с накоплением, месяц. 
+Для создания календаря использовать функцию add_months
+
+with calendar as
+ (select add_months(to_date('2016-01-01', 'yyyy-mm-dd'), level - 1) dt
+    from dual
+  connect by level <= 12),
+sums as
+ (select nvl(sum(e.f_sum), 0) as summ, c.dt
+    from calendar c
+    left join trans_external e
+      on trunc(e.dt_event, 'month') = c.dt
+     and e.v_status = 'A'
+   group by c.dt)
+select sum(s.summ) over(order by s.dt rows between unbounded preceding and current row) as "Сумма", 
+to_char(s.dt, 'month') as "Месяц"
+from sums s
+order by s.dt
+
+
+зад 5
+
+Вывести сумму с накоплением платежей по дням с марта по май 2016 года. При этом, сумма каждого нового месяца должна сбрасываться. 
+Формат вывода: сумма, дата в формате день.месяц
+
+with calendar as
+ (select to_date('2016-03-01', 'yyyy-mm-dd') + level - 1 dt
+    from dual
+  connect by level <= to_date('2016-06-01', 'yyyy-mm-dd') -
+             to_date('2016-03-01', 'yyyy-mm-dd')),
+sums as
+ (select nvl(sum(e.f_sum), 0) as summ, c.dt, trunc(c.dt, 'mm') as dt_month
+    from calendar c
+    left join trans_external e
+      on trunc(e.dt_event, 'dd') = c.dt
+     and e.v_status = 'A'
+   group by c.dt)
+select sum(s.summ) over(partition by s.dt_month order by s.dt range between unbounded preceding and current row) as summ, to_char(s.dt, 'dd.mm') as dd
+  from sums s
+ order by s.dt
+
+Задача 6
+Вывести, на сколько росли(или падали) в процентном соотношении 
+платежи по сравнению с прошлым месяцем в 2016 году.
+Вывод представить в формате: название месяца, сумма за месяц, 
+число_процентов_в_виде_number(20,2) %
+
+with calendar as
+ (select add_months(to_date('2015-12-01', 'yyyy-mm-dd'), level - 1) dt
+    from dual
+  connect by level <= 13),
+sums as
+ (select nvl(sum(e.f_sum), 0) as summ, c.dt
+    from calendar c
+    left join trans_external e
+      on trunc(e.dt_event, 'month') = c.dt
+     and e.v_status = 'A'
+   group by c.dt),
+sums_with_prev as
+ (select s.dt, s.summ, lag(s.summ) over(order by s.dt) as summ_prev
+    from sums s)
+select to_char(s.dt, 'month') as "Месяц",
+       s.summ,
+       decode(nvl(s.summ_prev, 0), 0, 'Неизвестно', to_char(cast((s.summ - s.summ_prev) / s.summ_prev * 100 as
+                       number(20, 2))) || ' %')
+  from sums_with_prev s
+  where s.dt >= to_date('2016-01-01', 'yyyy-mm-dd')
+ order by s.dt;
+
+Задача 7
+Вывести топ-5 департаментов по количеству платежей(если несколько департаментов занимают одно место, перечислите их через запятую). 
+Формат вывода: Название/я департамента, количество платежей, место в рейтинге.
+
+with cnt_on_dep as
+ (select count(te.id_trans) cnt, d.v_name
+    from fw_departments d
+    left join fw_contracts c
+      on c.id_department = d.id_department
+     and c.dt_start <= current_date
+     and c.dt_stop > current_date
+    left join trans_external te
+      on te.id_contract = c.id_contract_inst
+     and te.v_status = 'A'
+   where d.b_deleted = 0
+   group by d.v_name),
+ranked_deps as
+ (select d.v_name, d.cnt, dense_rank() over(order by d.cnt desc) as rnk
+    from cnt_on_dep d)
+select listagg(d.v_name, ', ') within group(order by d.v_name) as deps,
+       d.cnt,
+       d.rnk
+  from ranked_deps d
+ where d.rnk < 6
+ group by d.rnk, d.cnt;

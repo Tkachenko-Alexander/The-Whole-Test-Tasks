@@ -1,0 +1,181 @@
+Задача 1
+Вывести по дням, сколько абонентов подключалось в феврале 2016 года,
+ а также кумулятивную сумму
+
+with calendar as
+ (select to_date('01.02.2016', 'dd.mm.yyyy') + level - 1 as dt_day
+    from dual
+  connect by level <= add_months(to_date('01.02.2016', 'dd.mm.yyyy'), 1) -
+             to_date('01.02.2016', 'dd.mm.yyyy')),
+res as
+ (select c.dt_day, count(fc.id_contract_inst) cnt
+    from calendar c
+    left join fw_contracts fc
+      on trunc(fc.dt_reg_event, 'dd') = c.dt_day
+     and fc.dt_start <= current_timestamp
+     and fc.dt_stop > current_timestamp
+   group by c.dt_day
+   order by c.dt_day)
+select r.dt_day,
+       r.cnt, 
+       sum(r.cnt) over(order by r.dt_day rows unbounded preceding) as cumul
+  from res r;
+
+
+Задача 2
+
+Вывести для корневых филиалов(у которых отсутствуют родители) 
+суммарную АП самого филиала, и всех дочерних.
+Подсказка: используйте оператор CONNECT_BY_ROOT
+ 
+with deps as
+ (select CONNECT_BY_ROOT d.v_name as par, d.id_department
+    from fw_departments d
+   start with d.id_parent is null
+  connect by prior d.id_department = d.id_parent),
+sum_dep as
+ (select d.v_name, d.id_department, sum(cost_on_cont.sum_on_cont) as sum_dep
+    from fw_departments d
+    left join (select fc.v_ext_ident,
+                     sum(fs.n_cost_period) as sum_on_cont,
+                     fc.id_department
+                from fw_contracts fc
+                join fw_services_cost fs
+                  on fs.id_contract_inst = fc.id_contract_inst
+                 and fs.dt_stop > current_timestamp
+                 and fs.dt_start <= current_timestamp
+               where fc.dt_stop > current_timestamp
+                 and fc.dt_start <= current_timestamp
+                 and fc.v_status = 'A'
+               group by fc.v_ext_ident, fc.id_department) cost_on_cont
+      on d.id_department = cost_on_cont.id_department
+   where d.b_deleted = 0
+   group by d.v_name, d.id_department)
+select nvl(sum(s.sum_dep), 0), d.par
+  from deps d
+  join sum_dep s
+    on d.id_department = s.id_department
+ group by d.par;
+
+Задача 3
+Выведите, на сколько процентов падало или повышалось число активных абонентов за последние 10 лет. 
+Активным считается абонент, который был активен в течении года любое число времени.
+Вывести в формате x.xx%
+Подсказка: можно использовать функцию add_months
+
+with calendar as
+ (select add_months(trunc(current_timestamp, 'yyyy'), -12 * (level - 1)) as dt_year
+    from dual
+  connect by level <= 11),
+dat as
+ (select c.dt_year, count(distinct f.id_contract_inst) as cnt
+    from fw_contracts f
+    join calendar c
+      on f.dt_start < c.dt_year + interval '1' year
+     and f.dt_stop >= c.dt_year
+   where f.v_status = 'A'
+   group by c.dt_year),
+res as
+ (select d.dt_year,
+         d.cnt,
+         case
+           when lag(d.cnt) over(order by d.dt_year) = 0 then
+            null
+           else
+            to_char(cast(d.cnt / lag(d.cnt)
+                         over(order by d.dt_year) * 100 - 100 as
+                         number(20, 2)))
+         end || '%' as perc
+    from dat d)
+select *
+  from res r
+ where r.dt_year > trunc(current_timestamp, 'yyyy') - interval '10' year
+
+Задача 4
+Выведите топ-10 самых популярных тарифных планов.
+ Если несколько ТП занимают одно место - выведите через запятую. 
+Тарифный план считается подключенным у абонента, 
+если он присутствует хотя бы на одной из услуг.
+
+with dat as
+ (select tp.v_name, count(distinct f.id_contract_inst) cnt
+    from fw_contracts f
+    join fw_services fs
+      on fs.id_contract_inst = f.id_contract_inst
+     and fs.dt_start <= current_timestamp
+     and fs.dt_stop > current_timestamp
+     and fs.b_deleted = 0
+    join fw_tariff_plan tp
+      on tp.id_tariff_plan = fs.id_tariff_plan
+     and tp.dt_start <= current_timestamp
+     and tp.dt_stop > current_timestamp
+     and tp.b_deleted = 0
+     and tp.b_active = 1
+   where f.dt_start <= current_timestamp
+     and f.dt_stop > current_timestamp
+   group by tp.v_name),
+places as
+ (select d.v_name, d.cnt, dense_rank() over(order by d.cnt desc) rnk
+    from dat d)
+select listagg(p.v_name, ', ') within group(order by p.v_name),
+       p.cnt,
+       p.rnk
+  from places p
+ where p.rnk <= 10
+ group by p.cnt, p.rnk
+ order by p.rnk
+
+
+Задача 5
+Выведите топ-10 тарифных планов по величине АП. 
+Если несколько тарифных планов находятся на одном месте, 
+выведите их через запятую.
+Формат вывода: Тарифный план, АП, на сколько больше следующего места, место
+
+
+with tp_sum as
+ (select fs.id_tariff_plan, nvl(sum(fsc.n_cost_period), 0) sum_per
+    from fw_contracts fc
+    join fw_services fs
+      on fs.id_contract_inst = fc.id_contract_inst
+     and fs.b_deleted = 0
+     and fs.dt_start <= current_timestamp
+     and fs.dt_stop > current_timestamp
+    join fw_service fse
+      on fse.id_service = fs.id_service
+     and fse.b_deleted = 0
+    join fw_services_cost fsc
+      on fsc.id_service_inst = fs.id_service_inst
+     and fsc.dt_start <= current_timestamp
+     and fsc.dt_stop > current_timestamp
+   where fc.dt_start <= current_timestamp
+     and fc.dt_stop > current_timestamp
+   group by fs.id_tariff_plan),
+tp_sum_rank as
+ (select tt.id_tariff_plan,
+         tt.sum_per,
+         dense_rank() over(order by tt.sum_per desc) rnk
+    from tp_sum tt),
+res_wo_prev as
+ (select listagg(tp.v_name, ', ') within group(order by tp.v_name) as tariffs,
+         r.sum_per,
+         r.rnk
+    from tp_sum_rank r
+    join fw_tariff_plan tp
+      on tp.id_tariff_plan = r.id_tariff_plan
+     and tp.dt_start <= current_timestamp
+     and tp.dt_stop > current_timestamp
+     and tp.b_deleted = 0
+     and tp.b_active = 1
+     and r.rnk <= 11
+   group by r.sum_per, r.rnk),
+get_plus_val as
+ (select r.tariffs,
+         r.sum_per,
+         r.sum_per - lead(r.sum_per) over(order by r.sum_per desc) as val_plus,
+         r.rnk
+    from res_wo_prev r)
+select r.tariffs, r.sum_per, r.val_plus, r.rnk
+  from get_plus_val r
+ where r.rnk <= 10
+ order by r.rnk

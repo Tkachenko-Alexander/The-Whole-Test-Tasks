@@ -1,0 +1,163 @@
+Задача 1
+Поконтрактно вывести АП.
+Результат: номер договора, величина АП, филиал.
+
+select fc.v_ext_ident,
+       nvl(sum(fs.n_cost_period), 0),
+       nvl(d.v_name, 'Отсутствует')
+  from fw_contracts fc
+  left join fw_services_cost fs
+    on fs.id_contract_inst = fc.id_contract_inst
+   and fs.dt_stop > current_timestamp
+   and fs.dt_start <= current_timestamp
+  left join fw_departments d
+    on d.id_department = fc.id_department
+   and d.b_deleted = 0
+ where fc.dt_stop > current_timestamp
+   and fc.dt_start <= current_timestamp
+   and fc.v_status = 'A'
+ group by fc.v_ext_ident, d.v_name;
+ 
+Задача 2
+Выведите в виде дерева список услуг контракта с лицевым счетом 100539664. 
+Каждый уровень дерева отделите дополнительными тремя пробелами
+
+select lpad(' ', 3 * (level - 1)) || ff.v_name
+  from fw_services fs
+  join fw_service ff
+    on ff.id_service = fs.id_service
+   and ff.b_deleted = 0
+ where fs.dt_stop > current_timestamp
+   and fs.dt_start <= current_timestamp
+   and fs.b_deleted = 0
+   and exists (select 1
+          from fw_contracts f
+         where f.v_ext_ident = '100539664'
+           and f.id_contract_inst = fs.id_contract_inst
+           and f.dt_stop > current_timestamp
+           and f.dt_start <= current_timestamp)
+ start with fs.id_parent_inst is null
+connect by prior fs.id_service_inst = fs.id_parent_inst
+
+
+Задача 3
+Вывести среднюю АП пофилиально. При расчете учитывать, 
+что на контракте может быть несколько услуг,
+а средняя АП за филиал считается по контрактам.
+Результат: Средняя АП, филиал.
+
+
+select d.v_name, avg(cost_on_cont.sum_on_cont)
+  from fw_departments d
+  left join (select fc.v_ext_ident,
+                    nvl(sum(fs.n_cost_period), 0) as sum_on_cont, --  ПЕРЕВЕСТИ NVL НА ПЕРВУЮ СТРОКУ
+                    fc.id_department
+               from fw_contracts fc
+               join fw_services_cost fs
+                 on fs.id_contract_inst = fc.id_contract_inst
+                and fs.dt_stop > current_timestamp
+                and fs.dt_start <= current_timestamp
+              where fc.dt_stop > current_timestamp
+                and fc.dt_start <= current_timestamp
+                and fc.v_status = 'A'
+              group by fc.v_ext_ident, fc.id_department) cost_on_cont
+    on d.id_department = cost_on_cont.id_department
+ where d.b_deleted = 0
+ group by d.v_name;
+_________________________
+SELECT D.V_NAME, NVL(AVG(COST_ON_CONT.SUM_ON_CONT), 0) 
+FROM FW_DEPARTMENTS D 
+LEFT JOIN (SELECT FC.V_EXT_IDENT,
+           SUM(FS.N_COST_PERIOD) AS SUM_ON_CONT,
+           FC.ID_DEPARTMENT
+           FROM FW_CONTRACTS FC
+           JOIN FW_SERVICES_COST FS
+           ON FS.ID_CONTRACT_INST = FC.ID_CONTRACT_INST
+           AND FS.DT_STOP > CURRENT_TIMESTAMP
+           AND FS.DT_START <= CURRENT_TIMESTAMP
+           WHERE FC.DT_STOP > CURRENT_TIMESTAMP
+           AND FC.DT_START <= CURRENT_TIMESTAMP
+           AND FC.V_STATUS = 'A' 
+           GROUP BY FC.V_EXT_IDENT, FC.ID_DEPARTMENT) COST_ON_CONT
+  ON D.ID_DEPARTMENT = COST_ON_CONT.ID_DEPARTMENT
+  WHERE D.B_DELETED = 0
+  GROUP BY D.V_NAME;
+
+Задача 4
+Найти всех абонентов, у которых величина скидки на услугах менялась 2 и более раз в течение ноября 2017.
+Результат: номер договора, количество изменений величины скидок на услугах.
+
+with discs as
+ (select fc.v_ext_ident,
+         sc.n_discount_period,
+         lag(sc.n_discount_period) over(partition by fc.id_contract_inst, sc.id_service_inst order by sc.dt_start) as prev_disc,
+         sc.dt_stop,
+         sc.dt_start,
+         sc.id_service_inst
+    from fw_contracts fc
+    join fw_services_cost sc
+      on sc.id_contract_inst = fc.id_contract_inst
+     and sc.dt_stop > to_date('2017-11-01', 'yyyy-mm-dd')
+     and sc.dt_start < to_date('2017-12-01', 'yyyy-mm-dd')
+   where fc.dt_stop > current_timestamp
+     and fc.dt_start <= current_timestamp),
+discs_cnt as
+ (select count(1) cnt, t.v_ext_ident   -- ПОМЕНЯТЬ МЕСТАМИ
+    from discs t
+   where t.n_discount_period != t.prev_disc
+   group by t.v_ext_ident)
+select * from discs_cnt t where t.cnt >= 2 order by t.cnt desc;
+
+
+Задача 5
+Вывести самый прибыльный ТП с точки зрения суммарной АП за доп.услуги пофилиально.
+Результат: название филиала,
+ название ТП(если несколько ТП занимают одно место - вывести через запятую), величина АП.
+
+with ap_tp as  
+ (select fc.id_department, fs.id_tariff_plan, sum(fsc.n_cost_period) sum_per
+    from fw_contracts fc
+    join fw_services fs
+      on fs.id_contract_inst = fc.id_contract_inst
+     and fs.b_deleted = 0
+     and fs.dt_start <= current_timestamp
+     and fs.dt_stop > current_timestamp
+    join fw_service fse
+      on fse.id_service = fs.id_service
+     and fse.b_deleted = 0
+     and fse.b_add_service = 1
+    join fw_services_cost fsc
+      on fsc.id_service_inst = fs.id_service_inst
+     and fsc.dt_start <= current_timestamp
+     and fsc.dt_stop > current_timestamp
+   where fc.dt_start <= current_timestamp
+     and fc.dt_stop > current_timestamp
+   group by fc.id_department, fs.id_tariff_plan),
+ap_max_dep as
+ (select max(t.sum_per) as sum_per, t.id_department
+    from ap_tp t
+   group by t.id_department),
+tp_max as
+ (select m.id_department, a.id_tariff_plan, a.sum_per
+    from ap_tp a
+    left join ap_max_dep m
+      on m.id_department = a.id_department
+     and m.sum_per = a.sum_per)
+select d.v_name,
+       listagg(tp.v_name, ', ') within group(order by tp.v_name),
+       t.sum_per
+  from fw_departments d -- НЕДОДЕЛАНО
+  left join tp_max t
+    on t.id_department = d.id_department
+  left join fw_tariff_plan tp
+    on tp.id_tariff_plan = t.id_tariff_plan
+   and tp.dt_start <= current_timestamp
+   and tp.dt_stop > current_timestamp
+   and tp.b_deleted = 0
+   and tp.b_active = 1
+ where d.b_deleted = 0
+ group by d.v_name, t.sum_per
+ order by 3 nulls last;
+
+
+
